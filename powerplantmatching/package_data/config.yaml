@@ -25,6 +25,7 @@ matching_sources:
   - WIKIPEDIA: Fueltype != 'Solar'
   - GEM
   - MASTR
+  - HeatCapacity
 
 # fully_included_sources, these sources are included even without match to the final dataset
 fully_included_sources:
@@ -48,6 +49,10 @@ matched_data_url: https://raw.githubusercontent.com/PyPSA/powerplantmatching/{ta
 # ---------------------------------------------------------------------------- #
 
 opsd_vres_base_year: 2020
+
+HeatCapacity:
+  reliability_score: 4
+  fn: HeatCapacity.csv"
 
 BNETZA:
   reliability_score: 2
@@ -236,6 +241,7 @@ target_columns:
   - StorageCapacity_MWh
   - EIC
   - projectID
+  - CHP_MaxHeat
 target_countries:
   - Albania
   - Austria

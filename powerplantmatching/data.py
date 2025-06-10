@@ -2305,3 +2305,21 @@ def EXTERNAL_DATABASE(raw=False, update=True, config=None):
     df = df.pipe(set_column_name, "EXTERNAL_DATABASE").pipe(config_filter, config)
 
     return df
+
+def HeatCapacity(raw=False, config=None):
+    config = get_config() if config is None else config
+    df = pd.read_csv(get_raw_file("CHP_MaxHeat", update=False, config=config))
+    if raw:
+        return df
+    df = (
+        df.rename(columns={
+            "latitude": "lat",
+            "longitude": "lon",
+            "countrycode": "Country",
+            "max_power": "Capacity"
+        })
+        .loc[lambda d: d.Country.isin(config["target_countries"])]
+        .pipe(set_column_name, "HeatCapacity")
+        .pipe(config_filter, config)        # keeps all target_columns incl. CHP_MaxHeat
+    )
+    return df
