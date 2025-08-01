@@ -2291,7 +2291,7 @@ def DataUnits_CHP(raw=False, config=None):
     file_path = get_raw_file("DataUnits_CHP")
     df = pd.read_csv(
         file_path,
-        delimiter=';',
+        delimiter=',',
         decimal=','
     )
 
