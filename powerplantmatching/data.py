@@ -2270,56 +2270,69 @@ def MASTR(
 
     return df
 
-
-# deprecated alias for GGPT
-@deprecated(
-    deprecated_in="0.5.5",
-    details="Use `GGPT` instead.",
-)
-def GEM_GGPT(*args, **kwargs):
-    return GGPT(*args, **kwargs)
-
-
-def EXTERNAL_DATABASE(raw=False, update=True, config=None):
+#id,Name,Fueltype,Technology,Set,Country,Capacity,Efficiency,DateIn,DateRetrofit,DateOut,lat,lon,Duration,Volume_Mm3,DamHeight_m,StorageCapacity_MWh,EIC,projectID
+#Put data into: C:\Users\delic\AppData\Roaming\powerplantmatching\data\in\DataUnits_CHP.csv
+def DataUnits_CHP(raw=False, config=None):
     """
-    Importer for external custom databases.
+    Importer for the CHP (Combined Heat and Power) database.
+
     Parameters
     ----------
-    raw : boolean, default False
+    raw : Boolean, default False
         Whether to return the original dataset
-    update: bool, default True (unused)
-        Whether to update the data from the url.
     config : dict, default None
         Add custom specific configuration,
         e.g. powerplantmatching.config.get_config(target_countries='Italy'),
         defaults to powerplantmatching.config.get_config()
     """
-    if config is None:
-        return pd.DataFrame()
-
-    df = pd.read_csv(config["EXTERNAL_DATABASE"]["fn"], low_memory=False)
-
-    if raw:
-        return df
-
-    df = df.pipe(set_column_name, "EXTERNAL_DATABASE").pipe(config_filter, config)
-
-    return df
-
-def HeatCapacity(raw=False, config=None):
+    
     config = get_config() if config is None else config
-    df = pd.read_csv(get_raw_file("CHP_MaxHeat", update=False, config=config))
-    if raw:
-        return df
+    # Read the CSV file with semicolon delimiter and comma decimal points
+    file_path = get_raw_file("DataUnits_CHP")
+    df = pd.read_csv(
+        file_path,
+        delimiter=';',
+        decimal=','
+    )
+
+    defaults = {
+        "Duration":             pd.NA,       # falls nicht bekannt
+        "DamHeight_m":          pd.NA,       # für Stauanlagen
+        "DateRetrofit":         pd.NA,       # Jahr eines Retrofits
+        "EIC":                  pd.NA,       # Entso-E-Kennung
+        "StorageCapacity_MWh":  pd.NA,       # Speicher­kapazität
+        "Volume_Mm3":           pd.NA,       # Stauraum in Mio. m³
+        "projectID":            None,        # bekommt gleich noch eine ID
+    }
+
+    # fehlende Spalten ergänzen
+    for col, default in defaults.items():
+        if col not in df.columns:
+            df[col] = default
+
+    # für projectID optional eine laufende Nummer vergeben,
+    # wenn sie bisher ganz fehlt oder nur NA enthält
+    if df["projectID"].isna().all():
+        df["projectID"] = df.index.map(lambda i: f"DataUnits_CHP-{i}")
+    
     df = (
         df.rename(columns={
-            "latitude": "lat",
-            "longitude": "lon",
-            "countrycode": "Country",
-            "max_power": "Capacity"
+            'Name': 'Name',
+            'Fueltype': 'Fueltype',
+            'Technology': 'Technology',
+            'Set': 'Set',
+            'DateIn': 'DateIn',
+            'DateOut': 'DateOut',
+            'Country': 'Country',
+            'City': 'City',
+            'Capacity': 'Capacity',
+            'Efficiency': 'Efficiency',
+            'lat': 'lat',
+            'lon': 'lon',
+            'CHP_MaxHeat': 'HeatCapacity'
         })
-        .loc[lambda d: d.Country.isin(config["target_countries"])]
-        .pipe(set_column_name, "HeatCapacity")
-        .pipe(config_filter, config)        # keeps all target_columns incl. CHP_MaxHeat
+        .loc[lambda df: df.Country.isin(config['target_countries'])]
+        .pipe(set_column_name, 'DataUnits_CHP')
     )
+
     return df
