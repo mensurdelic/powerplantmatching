@@ -2295,6 +2295,10 @@ def DataUnits_CHP(raw=False, config=None):
         decimal=','
     )
 
+    for c in ["Efficiency", "Duration", "Capacity", "HeatCapacity"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", "."), errors="coerce")
+
     defaults = {
         "Duration":             pd.NA,       # falls nicht bekannt
         "DamHeight_m":          pd.NA,       # für Stauanlagen
