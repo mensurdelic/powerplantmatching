@@ -2292,12 +2292,14 @@ def DataUnits_CHP(raw=False, config=None):
     df = pd.read_csv(
         file_path,
         delimiter=',',
-        decimal=','
+        decimal=',',
+        encoding="ISO-8859-1", 
+        low_memory=False
     )
 
     for c in ["Efficiency", "Duration", "Capacity", "HeatCapacity"]:
         if c in df.columns:
-            df[c] = pd.to_numeric(df[c].astype(str).str.replace(",", "."), errors="coerce")
+            df[c] = pd.to_numeric(df[c].astype(str).str.replace(";", "."), errors="coerce")
 
     defaults = {
         "Duration":             pd.NA,       # falls nicht bekannt
