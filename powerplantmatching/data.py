@@ -19,6 +19,7 @@ Collection of power plant data bases and statistical data
 
 import logging
 import os
+import re
 from zipfile import ZipFile
 
 import entsoe
@@ -1122,128 +1123,145 @@ def WEPP(raw=False, config=None):
         .pipe(correct_manually, "WEPP", config=config)
     )
 
-
 @deprecated(
     deprecated_in="0.5.0",
     details="This function is not maintained anymore.",
 )
-def UBA(
-    raw=False,
-    update=False,
-    config=None,
-    header=9,
-    skipfooter=26,
-    prune_wind=True,
-    prune_solar=True,
-):
-    """
-    Importer for the UBA Database. Please download the data from
-    `<https://www.umweltbundesamt.de/dokument/datenbank-kraftwerke-in-deutschland>`_.
 
-    Parameters
-    ----------
-    raw : Boolean, default False
-        Whether to return the original dataset
-    update: bool, default False
-        Whether to update the data from the url.
-    config : dict, default None
-        Add custom specific configuration,
-        e.g. powerplantmatching.config.get_config(target_countries='Italy'),
-        defaults to powerplantmatching.config.get_config()
-    header : int, Default 9
-        The zero-indexed row in which the column headings are found.
-    skipfooter : int, Default 26
+def UBA(raw=False, update=False, config=None, header=9, skipfooter=26,
+        prune_wind=True, prune_solar=True):
 
-    """
+    from .heuristics import PLZ_to_LatLon_map
+
     config = get_config() if config is None else config
-
     fn = get_raw_file("UBA", update, config)
-    uba = pd.read_excel(fn, skipfooter=skipfooter, na_values="n.b.", header=header)
+
+    # --- CSV robust einlesen (Trenner + Encoding heuristisch) ---
+    enc = "utf-8-sig"
+    with open(fn, "rb") as f:
+        head = f.read(4096)
+    try:
+        head.decode(enc)
+    except UnicodeDecodeError:
+        enc = "ISO-8859-1"
+    txt = head.decode(enc, errors="ignore")
+    sep = ";" if txt.count(";") >= txt.count(",") else ","
+
+    uba = pd.read_csv(
+        fn, sep=sep, encoding=enc, decimal=",", thousands=".",
+        na_values=["n.b.", ""], low_memory=False
+    )
+
+# Header normalisieren
+    uba.columns = (uba.columns.astype(str)
+                   .str.replace("\u00a0", " ", regex=False)
+                   .str.replace(r"\s+", " ", regex=True)
+                   .str.strip())
 
     if raw:
         return uba
 
-    RENAME_COLUMNS = {
-        "Kraftwerksname / Standort": "Name",
-        "Elektrische Bruttoleistung (MW)": "Capacity",
-        "Inbetriebnahme  (ggf. Ertüchtigung)": "DateIn",
-        "Primärenergieträger": "Fueltype",
-        "Anlagenart": "Technology",
-        "Fernwärme-leistung (MW)": "CHP",
-        "Standort-PLZ": "PLZ",
-    }
+    # --- robuste Spaltenerkennung per Regex ---
+    def _norm(s):
+        return re.sub(r"\s+", " ", str(s)).strip().lower()
 
+    colmap = {}
+    def _setcol(regex, target):
+        # Neu: Zielspalte nur einmal belegen
+        if target in colmap.values():
+            return
+        hit = next((c for c in uba.columns if re.search(regex, _norm(c))), None)
+        if hit:
+            colmap[hit] = target
+
+    _setcol(r"^kraftwerksname.*standort", "Name")
+    _setcol(r"^elektrische.*leistung.*mw", "Capacity")
+    _setcol(r"^inbetriebnahme", "DateIn")
+    _setcol(r"^prim.*energietr", "Fueltype")
+    _setcol(r"^anlagenart", "Technology")
+    _setcol(r"fernw[aä]rme.*leistung.*mw", "HeatCapacity")
+    _setcol(r"(standort-)?plz", "PLZ")
+
+    # City zuerst exakt, dann nur falls noch nicht gefunden
+    _setcol(r"^kraftwerksstandort$", "City")
+    _setcol(r"^kraftwerks.*standort|^standort$", "City")
+
+    uba = uba.rename(columns=colmap)
+
+    # City vorhanden/als Text säubern – sonst leere Spalte anlegen
+    if "City" in uba.columns:
+        uba["City"] = uba["City"].astype(str).str.strip()
+    else:
+        uba["City"] = pd.NA
+
+    # Pflichtspalten prüfen
+    required = ["Name", "Capacity", "DateIn", "Fueltype", "Technology"]
+    missing = [c for c in required if c not in uba.columns]
+    if missing:
+        raise ValueError(f"UBA: fehlende Pflichtspalten nach Mapping: {missing} | Header: {list(uba.columns)}")
+
+    # DateIn säubern und numerisch machen (einmalig!)
+    uba["DateIn"] = (uba["DateIn"].astype(str)
+                     .str.replace(r"\(|\)|\/|\-", " ", regex=True)
+                     .str.split().str[0])
+    uba["DateIn"] = pd.to_numeric(uba["DateIn"], errors="coerce")
+
+    # PLZ auf 5 Ziffern bringen (für Längen/Breiten-Mapping)
+    uba["PLZ"] = uba["PLZ"].astype(str).str.extract(r"(\d{5})", expand=False)
+
+    # Technologie-Mapping
     RENAME_TECHNOLOGY = {
-        "DKW": "Steam Turbine",
-        "DWR": "Pressurized Water Reactor",
-        "G/AK": "Steam Turbine",
-        "GT": "OCGT",
-        "GuD": "CCGT",
-        "GuD / HKW": "CCGT",
-        "HKW": "Steam Turbine",
-        "HKW (DT)": "Steam Turbine",
-        "HKW / GuD": "CCGT",
-        "HKW / SSA": "Steam Turbine",
-        "IKW": "OCGT",
-        "IKW / GuD": "CCGT",
-        "IKW / HKW": "Steam Turbine",
-        "IKW / HKW / GuD": "CCGT",
-        "IKW / SSA": "OCGT",
-        "IKW /GuD": "CCGT",
-        "LWK": "Run-Of-River",
-        "PSW": "Pumped Storage",
-        "SWK": "Reservoir Storage",
+        "DKW": "Steam Turbine", "DWR": "Pressurized Water Reactor", "G/AK": "Steam Turbine",
+        "GT": "OCGT", "GuD": "CCGT", "GuD / HKW": "CCGT", "HKW": "Steam Turbine",
+        "HKW (DT)": "Steam Turbine", "HKW / GuD": "CCGT", "HKW / SSA": "Steam Turbine",
+        "IKW": "OCGT", "IKW / GuD": "CCGT", "IKW / HKW": "Steam Turbine",
+        "IKW / HKW / GuD": "CCGT", "IKW / SSA": "OCGT", "IKW /GuD": "CCGT",
+        "LWK": "Run-Of-River", "PSW": "Pumped Storage", "SWK": "Reservoir Storage",
         "SWR": "Boiled Water Reactor",
     }
 
-    uba = uba.rename(RENAME_COLUMNS)
-    from .heuristics import PLZ_to_LatLon_map
-
+    # Zuweisungen
     uba = uba.assign(
-        Name=uba.Name.replace({r"\s\s+": " "}, regex=True),
-        lon=uba.PLZ.map(PLZ_to_LatLon_map()["lon"]),
-        lat=uba.PLZ.map(PLZ_to_LatLon_map()["lat"]),
-        DateIn=uba.DateIn.str.replace(r"\(|\)|\/|\-", " ", regex=True)
-        .str.split(" ")
-        .str[0]
-        .astype(float),
+        Name=uba["Name"].replace({r"\s\s+": " "}, regex=True),
+        lon=uba["PLZ"].map(PLZ_to_LatLon_map()["lon"]),
+        lat=uba["PLZ"].map(PLZ_to_LatLon_map()["lat"]),
+        # hier KEIN .str mehr – DateIn ist bereits numerisch
         Country="Germany",
         projectID=[f"UBA{i + header + 2:03d}" for i in uba.index],
-        Technology=uba.Technology.replace(RENAME_TECHNOLOGY),
+        Technology=uba["Technology"].replace(RENAME_TECHNOLOGY),
     )
-    uba.loc[uba.CHP.notnull(), "Set"] = "CHP"
+
+    # optional: CHP-Flag nur, wenn Spalte existiert
+    if "CHP" in uba.columns:
+        uba.loc[uba["CHP"].notna(), "Set"] = "CHP"
     uba = uba.pipe(gather_set_info)
+
+    # Fueltype bereinigen
     uba.loc[uba.Fueltype == "Wind (O)", "Technology"] = "Offshore"
     uba.loc[uba.Fueltype == "Wind (L)", "Technology"] = "Onshore"
-    uba.loc[uba.Fueltype.str.contains("Wind"), "Fueltype"] = "Wind"
-    uba.loc[uba.Fueltype.str.contains("Braunkohle"), "Fueltype"] = "Lignite"
-    uba.loc[uba.Fueltype.str.contains("Steinkohle"), "Fueltype"] = "Hard Coal"
-    uba.loc[uba.Fueltype.str.contains("Erdgas"), "Fueltype"] = "Natural Gas"
-    uba.loc[uba.Fueltype.str.contains("HEL"), "Fueltype"] = "Oil"
-    uba.Fueltype = uba.Fueltype.replace(
-        {
-            "Biomasse": "Solid Biomass",
-            "Gichtgas": "Other",
-            "HS": "Oil",
-            "Konvertergas": "Other",
-            "Licht": "Solar",
-            "Raffineriegas": "Other",
-            "Uran": "Nuclear",
-            "Wasser": "Hydro",
-            "\xd6lr\xfcckstand": "Oil",
-        }
-    )
-    uba["Name"] = uba.Name.replace([r"(?i)oe", r"(?i)ue"], ["ö", "ü"], regex=True)
+    uba.loc[uba.Fueltype.str.contains("Wind", na=False), "Fueltype"] = "Wind"
+    uba.loc[uba.Fueltype.str.contains("Braunkohle", na=False), "Fueltype"] = "Lignite"
+    uba.loc[uba.Fueltype.str.contains("Steinkohle", na=False), "Fueltype"] = "Hard Coal"
+    uba.loc[uba.Fueltype.str.contains("Erdgas", na=False), "Fueltype"] = "Natural Gas"
+    uba.loc[uba.Fueltype.str.contains("HEL", na=False), "Fueltype"] = "Oil"
+    uba.Fueltype = uba.Fueltype.replace({
+        "Biomasse": "Solid Biomass", "Gichtgas": "Other", "HS": "Oil", "Konvertergas": "Other",
+        "Licht": "Solar", "Raffineriegas": "Other", "Uran": "Nuclear", "Wasser": "Hydro",
+        "\xd6lr\xfcckstand": "Oil",
+    })
+
+    # Umlaute im Namen wiederherstellen
+    uba["Name"] = uba["Name"].replace([r"(?i)oe", r"(?i)ue"], ["ö", "ü"], regex=True)
+
     if prune_wind:
         uba = uba.loc[lambda x: x.Fueltype != "Wind"]
     if prune_solar:
         uba = uba.loc[lambda x: x.Fueltype != "Solar"]
-    return (
-        uba.pipe(set_column_name, "UBA")
-        .pipe(scale_to_net_capacities, not config["UBA"]["net_capacity"])
-        .pipe(config_filter, config)
-        # .pipe(correct_manually, 'UBA', config=config)
-    )
+
+    return (uba
+            .pipe(set_column_name, "UBA")
+            .pipe(scale_to_net_capacities, not config["UBA"]["net_capacity"])
+            .pipe(config_filter, config))
 
 
 @deprecated(
@@ -2293,13 +2311,18 @@ def DataUnits_CHP(raw=False, config=None):
         file_path,
         delimiter=',',
         decimal=',',
-        encoding="ISO-8859-1", 
+        encoding="utf-8-sig", 
         low_memory=False
     )
-
-    for c in ["Efficiency", "Duration", "Capacity", "HeatCapacity"]:
+    # take here the original Name from DataUnits Input-file
+    for c in ["Efficiency", "Duration", "Capacity", "CHP_MaxHeat"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c].astype(str).str.replace(";", "."), errors="coerce")
+
+    # Datums­spalten als Integer (nullable) casten, sodass sie nicht mit .0 eingelesen werden
+    for col in ("DateIn", "DateOut"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")        
 
     defaults = {
         "Duration":             pd.NA,       # falls nicht bekannt
